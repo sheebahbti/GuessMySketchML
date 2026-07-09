@@ -1,4 +1,4 @@
-# AI Pictionary 🎨🤖
+# GuessMySketch ML 🎨🤖
 
 **You draw → the AI guesses what you drew!**
 
