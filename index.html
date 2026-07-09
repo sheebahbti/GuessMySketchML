@@ -28,6 +28,8 @@
           <div id="palette"></div>
 
           <p id="guess">Get ready to draw...</p>
+          <p id="other-guesses"></p>
+          <p id="taught-guess"></p>
           <p id="encouragement">Tip: draw big and in the middle! ✏️</p>
 
           <!-- Was the guess right? -->
@@ -52,6 +54,13 @@
             <datalist id="doodle-list"></datalist>
             <button id="answer-btn" type="button">Show me how! ✨</button>
             <div id="tips"></div>
+
+            <!-- Teach the AI: trains a personal classifier in THIS browser only -->
+            <div id="teach">
+              <button id="teach-btn" type="button">🧠 Teach the AI this!</button>
+              <button id="train-btn" type="button" hidden>🎓 Train the AI</button>
+              <p id="teach-status"></p>
+            </div>
           </div>
 
           <div id="controls">

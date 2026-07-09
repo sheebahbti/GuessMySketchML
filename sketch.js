@@ -4,7 +4,8 @@
 
 const CANVAS_WIDTH = 560;
 const CANVAS_HEIGHT = 560;
-const BRUSH_SIZE = 30; // thick brush so strokes survive shrinking to 28x28 for the AI
+const BRUSH_SIZE = 14; // thin pen so kids can draw more detail in the box (crop+center
+                       // normalization scales the drawing up, so thin lines still show)
 const GUESS_EVERY_MS = 700; // how often the AI looks at the drawing
 
 // --- Accuracy tuning ---------------------------------------------------------
@@ -18,6 +19,13 @@ const NORM_PAD = 60;    // white margin kept around the drawing (~10%, like Quic
 // We also smooth guesses over the last few classifications so the answer is
 // steadier and less jumpy (temporal smoothing / majority vote).
 const HISTORY_SIZE = 5;
+
+// --- "Teach the AI" (in-browser transfer learning) ---------------------------
+// A separate, personal classifier the kid can train by example. It uses ml5's
+// featureExtractor (MobileNet) as a base and learns ONLY from drawings taught on
+// THIS device — nothing is uploaded or shared with anyone else.
+const TEACH_SIZE = 224;                  // size of the snapshot fed to the learner
+const STORAGE_KEY = "gms_taught_v1";     // localStorage key for taught examples
 
 // Colors the kid can pick from (name + value).
 const COLORS = [
@@ -84,6 +92,14 @@ let modelLoaded = false;
 let minX = 0, minY = 0, maxX = 0, maxY = 0, hasBounds = false;
 // Recent top guesses, kept for temporal smoothing (see gotResult).
 let guessHistory = [];
+
+// "Teach the AI" state (all local to this browser).
+let featureExtractor;      // MobileNet base model
+let customClassifier;      // the personal classifier trained on taught examples
+let customTrained = false; // true once it has been trained at least once
+let taughtCounts = {};     // how many examples per label the kid has taught
+let taughtExamples = [];   // [{ dataUrl, label }] persisted in localStorage
+let pendingDataUrl = null; // snapshot of the drawing being taught right now
 let brushColor = COLORS[0].value; // current drawing color (starts black)
 let hasDrawing = false; // true once the kid has drawn something
 let lastLabel = "";     // the AI's most recent top guess
@@ -130,6 +146,12 @@ function setup() {
   const answerBtn = document.getElementById("answer-btn");
   if (answerBtn) answerBtn.addEventListener("click", onShowHow);
 
+  const teachBtn = document.getElementById("teach-btn");
+  if (teachBtn) teachBtn.addEventListener("click", onTeach);
+
+  const trainBtn = document.getElementById("train-btn");
+  if (trainBtn) trainBtn.addEventListener("click", onTrain);
+
   // Stop the page from scrolling when kids draw with a finger on the canvas.
   canvas.elt.addEventListener("touchstart", (e) => e.preventDefault(), {
     passive: false,
@@ -144,6 +166,17 @@ function setup() {
   // Load the pre-trained DoodleNet model. modelReady() runs when it's done.
   classifier = ml5.imageClassifier("DoodleNet", modelReady);
 
+  // Load the MobileNet feature extractor that powers "Teach the AI".
+  // epochs: how many learning passes "Train the AI" makes over the examples.
+  // batchSize (a FRACTION of the examples): must be big enough that it never
+  // rounds down to 0 for a small teaching set — otherwise training throws
+  // "Batch size is 0" and never runs.
+  featureExtractor = ml5.featureExtractor(
+    "MobileNet",
+    { epochs: 20, batchSize: 0.5 },
+    featureExtractorReady
+  );
+
   console.log("p5.js is running — canvas ready to draw!");
 }
 
@@ -156,6 +189,14 @@ function modelReady() {
   // Once the model is ready, let the AI look at the drawing on a timer
   // (not every frame — that would be slow and jumpy).
   setInterval(guess, GUESS_EVERY_MS);
+}
+
+// Called once the MobileNet feature extractor has loaded. Sets up the personal
+// classifier and restores anything the kid taught it before (this browser only).
+function featureExtractorReady() {
+  customClassifier = featureExtractor.classification();
+  console.log("Feature extractor ready — 'Teach the AI' is available.");
+  loadTaughtExamples();
 }
 
 function draw() {
@@ -220,6 +261,9 @@ function clearCanvas() {
   hideWrongPanel();
   setGuessText("Cleared! Draw something new 🎨");
   setEncouragement("Tip: draw big and in the middle! ✏️");
+  setOtherGuesses("");
+  setTaughtGuess("");
+  pendingDataUrl = null;
 }
 
 // Kid says the guess was correct.
@@ -241,6 +285,15 @@ function onWrong() {
   }
   const tips = document.getElementById("tips");
   if (tips) tips.innerHTML = "";
+
+  // Snapshot the current drawing so the kid can teach the AI what it really is.
+  pendingDataUrl = hasDrawing ? snapshotNormalized() : null;
+  setTeachStatus(
+    customClassifier
+      ? 'Type what it was, then press "Teach the AI this!"'
+      : "The learning brain is still loading... one moment."
+  );
+
   setEncouragement("Oops! Tell me what it was ⬇️");
 }
 
@@ -502,7 +555,13 @@ function guess() {
   if (awaitingFeedback) return; // paused while showing "how to draw" help
   // Classify a normalized (cropped + centered) black-on-white copy — this
   // matches how DoodleNet's training doodles look, so guesses are more accurate.
-  classifier.classify(buildNormalized(), gotResult);
+  const img = buildNormalized();
+  classifier.classify(img, gotResult);
+
+  // If the kid has trained their own classifier, also ask it what it thinks.
+  if (customTrained && customClassifier) {
+    customClassifier.classify(img, gotCustomResult);
+  }
 }
 
 // Called with the AI's guesses (best guess first).
@@ -526,15 +585,11 @@ function gotResult(error, results) {
     sums[g.label] = (sums[g.label] || 0) + g.confidence;
     counts[g.label] = (counts[g.label] || 0) + 1;
   }
-  let bestLabel = results[0].label;
-  let bestSum = -1;
-  for (const l in sums) {
-    if (sums[l] > bestSum) {
-      bestSum = sums[l];
-      bestLabel = l;
-    }
-  }
 
+  // Rank all seen labels by total confidence, strongest first.
+  const ranked = Object.keys(sums).sort((a, b) => sums[b] - sums[a]);
+
+  const bestLabel = ranked[0];
   const percent = Math.round((sums[bestLabel] / counts[bestLabel]) * 100);
   const label = bestLabel.toUpperCase();
   lastLabel = bestLabel;
@@ -542,10 +597,27 @@ function gotResult(error, results) {
   // Show the guess on screen in friendly language.
   setGuessText(`I think it's a ${label}! — ${percent}% sure`);
 
+  // Doodles are tricky — also show the next couple of guesses so the kid can
+  // see the one they meant even when the top pick is wrong.
+  const others = ranked.slice(1, 3).map((l) => l.toUpperCase());
+  if (others.length > 0) {
+    setOtherGuesses(`or maybe: ${others.join(", ")}`);
+  } else {
+    setOtherGuesses("");
+  }
+
   // Show a random cheer to keep it fun.
   setEncouragement(random(CHEERS));
 
   console.log(`AI guess: ${bestLabel} (${percent}%)`);
+}
+
+// Result from the kid's own trained classifier ("Teach the AI").
+function gotCustomResult(error, results) {
+  if (error || !results || !results[0]) return;
+  const top = results[0];
+  const percent = Math.round(top.confidence * 100);
+  setTaughtGuess(`🧠 You taught me: ${top.label.toUpperCase()} (${percent}%)`);
 }
 
 // Returns true if the given point is inside the canvas area.
@@ -608,6 +680,165 @@ function buildNormalized() {
   return normBuffer;
 }
 
+// ---------------------------------------------------------------------------
+// "Teach the AI" — a personal classifier trained in the browser, on this
+// device only. Nothing is uploaded; examples live in localStorage.
+// ---------------------------------------------------------------------------
+
+// Take a small square snapshot of the current normalized drawing as a data URL.
+function snapshotNormalized() {
+  const g = createGraphics(TEACH_SIZE, TEACH_SIZE);
+  g.background(255);
+  g.image(buildNormalized(), 0, 0, TEACH_SIZE, TEACH_SIZE);
+  const url = g.canvas.toDataURL("image/png");
+  g.remove();
+  return url;
+}
+
+// Kid pressed "Teach the AI this!" — add the snapshot under the typed label.
+function onTeach() {
+  const input = document.getElementById("answer-input");
+  const label = input ? input.value.trim().toLowerCase() : "";
+  if (!label) {
+    setTeachStatus("First type what you drew ✏️");
+    return;
+  }
+  if (!pendingDataUrl) {
+    setTeachStatus("Draw something first, then tell me what it was.");
+    return;
+  }
+  if (!customClassifier) {
+    setTeachStatus("The learning brain is still loading... try again in a moment.");
+    return;
+  }
+  setTeachStatus("Adding your example... 🧠");
+  addTaughtExample(pendingDataUrl, label, true);
+}
+
+// Add one example to the personal classifier (and optionally remember it).
+// We draw the snapshot onto a real <canvas> and hand THAT to ml5 — passing a
+// p5.Image (from loadImage) fails because tf.browser.fromPixels can't read it.
+function addTaughtExample(dataUrl, label, isNew) {
+  const imgEl = new Image();
+  imgEl.onload = () => {
+    const g = createGraphics(TEACH_SIZE, TEACH_SIZE);
+    g.pixelDensity(1);
+    g.background(255);
+    g.drawingContext.drawImage(imgEl, 0, 0, TEACH_SIZE, TEACH_SIZE);
+    customClassifier.addImage(g.elt, label, () => {
+      taughtCounts[label] = (taughtCounts[label] || 0) + 1;
+      if (isNew) {
+        taughtExamples.push({ dataUrl, label });
+        saveTaught();
+        updateTeachStatus();
+      }
+      maybeShowTrain();
+      g.remove();
+    });
+  };
+  imgEl.onerror = () => setTeachStatus("Hmm, couldn't read that drawing. Try again.");
+  imgEl.src = dataUrl;
+}
+
+// Show how many examples the kid has taught so far.
+function updateTeachStatus() {
+  const labels = Object.keys(taughtCounts);
+  if (labels.length === 0) {
+    setTeachStatus("");
+    return;
+  }
+  const parts = labels.map((l) => `${l} ×${taughtCounts[l]}`);
+  const needMore = labels.length < 2;
+  setTeachStatus(
+    "You taught me: " +
+      parts.join(", ") +
+      (needMore
+        ? " — now teach a DIFFERENT thing too (I need at least 2 kinds to learn), then Train!"
+        : " — now press Train the AI 🎓")
+  );
+}
+
+// Reveal the Train button once there are at least 2 different labels.
+function maybeShowTrain() {
+  const trainBtn = document.getElementById("train-btn");
+  if (trainBtn) trainBtn.hidden = Object.keys(taughtCounts).length < 2;
+}
+
+// Kid pressed "Train the AI" — learn from all taught examples.
+function onTrain() {
+  if (!customClassifier || Object.keys(taughtCounts).length < 2) {
+    setTeachStatus("Teach me at least 2 different things first.");
+    return;
+  }
+
+  // Disable the button while training so it's clear something is happening.
+  const trainBtn = document.getElementById("train-btn");
+  if (trainBtn) trainBtn.disabled = true;
+
+  let epoch = 0;
+  const totalEpochs = 20; // matches the epochs option on the feature extractor
+  setTeachStatus("Learning from your drawings... 🧠 0%");
+
+  customClassifier.train((loss) => {
+    if (loss === null || loss === undefined) {
+      // Training finished — let the kid know clearly that they can draw again.
+      customTrained = true;
+      awaitingFeedback = false; // resume guessing
+      if (trainBtn) trainBtn.disabled = false;
+      setTeachStatus("✅ All learned! You can draw again now 🎓");
+      setEncouragement("✅ Done learning! Draw it again and I'll use what you taught me 🎓");
+    } else {
+      // Called once per learning pass — show a growing progress percentage.
+      epoch++;
+      const pct = Math.min(99, Math.round((epoch / totalEpochs) * 100));
+      setTeachStatus(`Learning from your drawings... 🧠 ${pct}%`);
+    }
+  });
+}
+
+// Save taught examples to THIS browser only.
+function saveTaught() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(taughtExamples));
+  } catch (e) {
+    console.warn("Could not save taught examples:", e);
+  }
+}
+
+// Reload taught examples from localStorage and re-teach the classifier.
+function loadTaughtExamples() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch (e) {
+    return;
+  }
+  if (!raw) return;
+  try {
+    taughtExamples = JSON.parse(raw) || [];
+  } catch (e) {
+    taughtExamples = [];
+    return;
+  }
+  if (taughtExamples.length === 0) return;
+
+  taughtExamples.forEach((ex) => addTaughtExample(ex.dataUrl, ex.label, false));
+
+  // The addImage calls above are async; wait a moment for them to settle, then
+  // auto-train so the kid's earlier lessons are ready again.
+  setTimeout(() => {
+    maybeShowTrain();
+    if (Object.keys(taughtCounts).length >= 2) {
+      customClassifier.train((loss) => {
+        if (loss === null || loss === undefined) {
+          customTrained = true;
+          setTeachStatus("Loaded what you taught me before 🎓");
+        }
+      });
+    }
+  }, 1000);
+}
+
 // Build the clickable color palette and wire up color selection.
 function buildPalette() {
   const palette = document.getElementById("palette");
@@ -656,6 +887,30 @@ function setGuessText(message) {
 // Helper to update the on-screen encouragement text.
 function setEncouragement(message) {
   const el = document.getElementById("encouragement");
+  if (el) {
+    el.textContent = message;
+  }
+}
+
+// Helper to update the smaller "or maybe: ..." line of runner-up guesses.
+function setOtherGuesses(message) {
+  const el = document.getElementById("other-guesses");
+  if (el) {
+    el.textContent = message;
+  }
+}
+
+// Helper to update the green "You taught me: ..." line.
+function setTaughtGuess(message) {
+  const el = document.getElementById("taught-guess");
+  if (el) {
+    el.textContent = message;
+  }
+}
+
+// Helper to update the "Teach the AI" status line.
+function setTeachStatus(message) {
+  const el = document.getElementById("teach-status");
   if (el) {
     el.textContent = message;
   }
