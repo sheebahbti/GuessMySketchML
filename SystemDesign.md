@@ -18,6 +18,33 @@ Everything runs in the browser  →  no backend, no database, no login
 
 ---
 
+## ⭐ Where Machine Learning Is Used (Highlighted)
+
+> **This is the machine-learning heart of the project.** Everything else (canvas,
+> colors, buttons) is just plumbing around these two ML steps.
+
+The ML lives entirely in [`sketch.js`](sketch.js) and runs **in the browser** via
+**ml5.js → TensorFlow.js → the pre-trained DoodleNet model**:
+
+| ML step | What happens | Code |
+|---|---|---|
+| **1. Load the model** | Download the pre-trained DoodleNet neural network | `ml5.imageClassifier("DoodleNet", modelReady)` in `setup()` |
+| **2. Preprocess (accuracy)** | Crop + center the drawing to match DoodleNet's training style | `buildNormalized()` |
+| **3. Inference (the guess)** | Feed the drawing to the network → get label + confidence | `classifier.classify(...)` in `guess()` → `gotResult()` |
+| **4. Smooth the result** | Average the last few guesses for a steadier, more accurate answer | `gotResult()` (temporal smoothing) |
+
+> 🧠 **Key idea:** the model already *learned* from millions of Google *Quick, Draw!*
+> doodles. This app never trains anything — it only runs that trained brain on new
+> drawings. That prediction step is called **inference**, and it *is* the machine
+> learning happening live in the browser.
+
+```
+Kid's drawing  →  buildNormalized()  →  DoodleNet (via ml5.js / TensorFlow.js)  →  "CAT 91%"
+                   └ crop + center ┘      └────────── inference = using ML ──────────┘
+```
+
+---
+
 ## 2. Tools & Technologies
 
 | Layer | Tool / Technology | Role in the Project |
@@ -109,9 +136,9 @@ DoodleNet **model** is also fetched over the network for the same reasons.
 2. `index.html` loads **p5.js** and **ml5.js** from a CDN.
 3. **ml5.js** downloads the **DoodleNet** model (runs on **TensorFlow.js**).
 4. The kid draws on the **p5.js canvas** with mouse or touch.
-5. **sketch.js** sends the canvas pixels to **ml5.js** (`classify()`).
+5. **sketch.js** first **crops and re-centers** the drawing (`buildNormalized()`) so it matches DoodleNet's training style, then sends those pixels to **ml5.js** (`classify()`).
 6. **DoodleNet** predicts the most likely category + a confidence score (**inference**).
-7. **sketch.js** displays the guess on screen in friendly language.
+7. **sketch.js smooths** the last few predictions and displays the guess on screen in friendly language.
 8. The **Clear** button wipes the canvas so the kid can try again.
 
 ---
@@ -125,6 +152,8 @@ DoodleNet **model** is also fetched over the network for the same reasons.
 | CDN libraries (no npm/build) | Kid- and beginner-friendly; open the file and it works. |
 | Static hosting | Free, fast, and shareable with one link. |
 | White canvas + black brush | Matches the *Quick, Draw!* data the model learned from → better accuracy. |
+| Crop + center before classifying | DoodleNet expects centered doodles that fill the frame; normalizing the drawing boosts accuracy (`buildNormalized`). |
+| Smooth guesses over recent frames | Averaging the last few predictions gives a steadier, more reliable answer. |
 | Classify on a timer, not every frame | Keeps the drawing smooth and avoids overworking the CPU. |
 
 ---

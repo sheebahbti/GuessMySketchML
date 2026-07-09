@@ -6,6 +6,14 @@ A fun, kid-friendly machine learning game that runs entirely in the browser. Dra
 
 ---
 
+## ▶️ Play It Now
+
+**Live app:** **https://sheebahbti.github.io/GuessMySketchML/**
+
+Open the link in any modern browser (Chrome, Edge, Firefox, or Safari) — no install and no sign-up needed. On the first load, wait a few seconds for the AI model to download, then start drawing and watch it guess!
+
+---
+
 ## What We're Building
 
 A simple web game where:
@@ -134,7 +142,8 @@ The game is a static site (HTML/CSS/JS), so hosting is free and simple.
 ## Status
 
 ✅ Core game complete — draw, colors, live AI guessing, Clear button, touch support.
-Ready to deploy.
+✅ Accuracy tuned — the drawing is cropped, centered, and smoothed before the AI guesses.
+🚀 **Deployed on GitHub Pages:** https://sheebahbti.github.io/GuessMySketchML/
 
 ## License
 

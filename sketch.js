@@ -5,7 +5,19 @@
 const CANVAS_WIDTH = 560;
 const CANVAS_HEIGHT = 560;
 const BRUSH_SIZE = 30; // thick brush so strokes survive shrinking to 28x28 for the AI
-const GUESS_EVERY_MS = 1000; // how often the AI looks at the drawing
+const GUESS_EVERY_MS = 700; // how often the AI looks at the drawing
+
+// --- Accuracy tuning ---------------------------------------------------------
+// DoodleNet was trained on Quick, Draw! doodles that are CENTERED and roughly
+// FILL the frame. So before we classify, we crop the drawing to its bounding
+// box and re-center it in a padded square (see buildNormalized). This alone is
+// the single biggest accuracy win — a small doodle in a corner would otherwise
+// shrink to almost nothing when scaled down to 28x28.
+const NORM_SIZE = 560;  // size of the square we normalize the drawing into
+const NORM_PAD = 60;    // white margin kept around the drawing (~10%, like Quick, Draw!)
+// We also smooth guesses over the last few classifications so the answer is
+// steadier and less jumpy (temporal smoothing / majority vote).
+const HISTORY_SIZE = 5;
 
 // Colors the kid can pick from (name + value).
 const COLORS = [
@@ -63,8 +75,15 @@ const SPECIFIC_TIPS = {
 
 let canvas;            // the p5 canvas (what the kid sees, in color)
 let mlBuffer;          // hidden black-on-white copy the AI looks at (for accuracy)
+let normBuffer;        // normalized (cropped + centered) copy actually sent to the AI
 let classifier;        // the DoodleNet model
 let modelLoaded = false;
+
+// Bounding box of everything the kid has drawn, used to crop + center before
+// classifying. hasBounds is false until the first stroke.
+let minX = 0, minY = 0, maxX = 0, maxY = 0, hasBounds = false;
+// Recent top guesses, kept for temporal smoothing (see gotResult).
+let guessHistory = [];
 let brushColor = COLORS[0].value; // current drawing color (starts black)
 let hasDrawing = false; // true once the kid has drawn something
 let lastLabel = "";     // the AI's most recent top guess
@@ -85,6 +104,11 @@ function setup() {
   // (not the colorful canvas) to guess accurately.
   mlBuffer = createGraphics(CANVAS_WIDTH, CANVAS_HEIGHT);
   mlBuffer.background(255);
+
+  // Normalized buffer: the cropped + centered version of the drawing that the
+  // AI actually classifies (built fresh on every guess in buildNormalized).
+  normBuffer = createGraphics(NORM_SIZE, NORM_SIZE);
+  normBuffer.background(255);
 
   // Build the color palette buttons.
   buildPalette();
@@ -149,6 +173,8 @@ function draw() {
       stopDemo();
       background(255);
       mlBuffer.background(255);
+      resetBounds();
+      guessHistory = [];
       demoOnCanvas = false;
     }
 
@@ -164,6 +190,10 @@ function draw() {
     mlBuffer.strokeWeight(BRUSH_SIZE);
     mlBuffer.strokeCap(ROUND);
     mlBuffer.line(pmouseX, pmouseY, mouseX, mouseY);
+
+    // Grow the bounding box so we know where the drawing is (for cropping).
+    updateBounds(mouseX, mouseY);
+    updateBounds(pmouseX, pmouseY);
 
     hasDrawing = true;
   }
@@ -183,6 +213,8 @@ function clearCanvas() {
   demoOnCanvas = false;
   background(255);
   mlBuffer.background(255);
+  resetBounds();
+  guessHistory = [];
   hasDrawing = false;
   awaitingFeedback = false;
   hideWrongPanel();
@@ -433,6 +465,8 @@ function playDemo(label) {
   // Fresh canvas for the example.
   background(255);
   mlBuffer.background(255);
+  resetBounds();
+  guessHistory = [];
   hasDrawing = false;
   demoOnCanvas = true;
 
@@ -466,8 +500,9 @@ function guess() {
   if (!modelLoaded) return;
   if (!hasDrawing) return; // nothing drawn yet — don't guess on a blank canvas
   if (awaitingFeedback) return; // paused while showing "how to draw" help
-  // Classify the black-on-white buffer, not the colorful canvas.
-  classifier.classify(mlBuffer, gotResult);
+  // Classify a normalized (cropped + centered) black-on-white copy — this
+  // matches how DoodleNet's training doodles look, so guesses are more accurate.
+  classifier.classify(buildNormalized(), gotResult);
 }
 
 // Called with the AI's guesses (best guess first).
@@ -477,11 +512,32 @@ function gotResult(error, results) {
     return;
   }
 
-  // results[0] is the top guess: { label, confidence }
-  const top = results[0];
-  const percent = Math.round(top.confidence * 100);
-  const label = top.label.toUpperCase();
-  lastLabel = top.label;
+  // Remember this round's top guess and keep only the most recent few.
+  guessHistory.push(results[0]);
+  if (guessHistory.length > HISTORY_SIZE) guessHistory.shift();
+
+  // Temporal smoothing: instead of trusting a single jumpy frame, add up the
+  // confidence for each label across the recent guesses and pick the strongest.
+  // A label that shows up consistently beats a one-off spike, so the answer is
+  // both steadier and usually more accurate.
+  const sums = {};
+  const counts = {};
+  for (const g of guessHistory) {
+    sums[g.label] = (sums[g.label] || 0) + g.confidence;
+    counts[g.label] = (counts[g.label] || 0) + 1;
+  }
+  let bestLabel = results[0].label;
+  let bestSum = -1;
+  for (const l in sums) {
+    if (sums[l] > bestSum) {
+      bestSum = sums[l];
+      bestLabel = l;
+    }
+  }
+
+  const percent = Math.round((sums[bestLabel] / counts[bestLabel]) * 100);
+  const label = bestLabel.toUpperCase();
+  lastLabel = bestLabel;
 
   // Show the guess on screen in friendly language.
   setGuessText(`I think it's a ${label}! — ${percent}% sure`);
@@ -489,12 +545,67 @@ function gotResult(error, results) {
   // Show a random cheer to keep it fun.
   setEncouragement(random(CHEERS));
 
-  console.log(`AI guess: ${top.label} (${percent}%)`);
+  console.log(`AI guess: ${bestLabel} (${percent}%)`);
 }
 
 // Returns true if the given point is inside the canvas area.
 function isOnCanvas(x, y) {
   return x >= 0 && x <= CANVAS_WIDTH && y >= 0 && y <= CANVAS_HEIGHT;
+}
+
+// Forget where the drawing was (called whenever the canvas is wiped).
+function resetBounds() {
+  hasBounds = false;
+  minX = minY = maxX = maxY = 0;
+}
+
+// Grow the drawing's bounding box to include point (x, y), padded by the brush
+// radius so thick strokes near an edge are fully covered.
+function updateBounds(x, y) {
+  const r = BRUSH_SIZE / 2;
+  if (!hasBounds) {
+    minX = x - r; maxX = x + r;
+    minY = y - r; maxY = y + r;
+    hasBounds = true;
+  } else {
+    minX = Math.min(minX, x - r);
+    maxX = Math.max(maxX, x + r);
+    minY = Math.min(minY, y - r);
+    maxY = Math.max(maxY, y + r);
+  }
+}
+
+// Build the image the AI actually looks at: crop the drawing to its bounding
+// box and re-center it inside a padded white square. DoodleNet expects doodles
+// that are centered and fill most of the frame, so this makes small or
+// off-center drawings recognizable instead of shrinking them to a tiny blob.
+function buildNormalized() {
+  if (!hasBounds) return mlBuffer; // nothing drawn yet — fall back to raw buffer
+
+  // Clamp the box to the canvas so we never read outside it.
+  const loX = Math.max(0, minX);
+  const loY = Math.max(0, minY);
+  const hiX = Math.min(CANVAS_WIDTH, maxX);
+  const hiY = Math.min(CANVAS_HEIGHT, maxY);
+  const w = hiX - loX;
+  const h = hiY - loY;
+  if (w <= 0 || h <= 0) return mlBuffer;
+
+  // Scale so the longer side of the drawing fits the padded target area,
+  // keeping the aspect ratio (no stretching).
+  const target = NORM_SIZE - NORM_PAD * 2;
+  const scale = target / Math.max(w, h);
+  const cx = loX + w / 2;
+  const cy = loY + h / 2;
+
+  normBuffer.background(255);
+  normBuffer.push();
+  normBuffer.translate(NORM_SIZE / 2, NORM_SIZE / 2); // center of the output
+  normBuffer.scale(scale);
+  normBuffer.translate(-cx, -cy); // bring the drawing's center to the origin
+  normBuffer.image(mlBuffer, 0, 0);
+  normBuffer.pop();
+  return normBuffer;
 }
 
 // Build the clickable color palette and wire up color selection.
