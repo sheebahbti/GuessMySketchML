@@ -40,6 +40,37 @@ Kid draws on canvas  →  DoodleNet model (ml5.js)  →  Guess + confidence show
 
 ---
 
+## Where Is Machine Learning Used?
+
+The AI in this game is **DoodleNet**, a pre-trained image-classification neural network loaded through ml5.js. The machine learning happens in two steps:
+
+1. **Loading the model** — `ml5.imageClassifier('DoodleNet', modelReady)` downloads the pre-trained neural network into the browser.
+2. **Making a guess** — `classifier.classify(canvas, gotResult)` feeds the kid's drawing into that network, which predicts which of **345 categories** (cat, house, tree…) it most looks like, along with a confidence score.
+
+### Using ML vs. Training ML
+
+This project **uses** machine learning but does **not train** any model:
+
+| | This project |
+|---|---|
+| Trains a model from data? | ❌ No |
+| Uses a trained model to make predictions? | ✅ Yes (this is called *inference*) |
+| Where the "learning" happened | Already done by Google on the *Quick, Draw!* dataset (50M+ drawings) |
+
+The neural network already "learned" from millions of human doodles **before** the page is ever opened. The game simply runs that trained brain on new drawings — that prediction step is called **inference**, and it is the real machine learning happening live in your browser.
+
+```
+Google trains DoodleNet on millions of doodles   ← the "learning" (done already)
+                    │
+                    ▼
+Game loads the trained model in the browser      ← ML step 1
+                    │
+                    ▼
+Kid draws → model predicts "CAT 91%"             ← ML step 2 (inference = using ML)
+```
+
+---
+
 ## Tech Stack (all free)
 
 | Layer | Technology | Why |
@@ -60,9 +91,50 @@ Kid draws on canvas  →  DoodleNet model (ml5.js)  →  Guess + confidence show
 
 ---
 
+## Running Locally
+
+Because the game loads an AI model over the network, run it through a small local
+web server (not by double-clicking the file):
+
+```powershell
+# From the project folder:
+python -m http.server 5500
+```
+
+Then open **http://localhost:5500/index.html** in your browser.
+
+> Tip: VS Code's **Live Server** extension works too — right-click `index.html` → *Open with Live Server*.
+
+---
+
+## Deployment
+
+The game is a static site (HTML/CSS/JS), so hosting is free and simple.
+
+### Option A — GitHub Pages
+1. Push this folder to a GitHub repository.
+2. In the repo: **Settings → Pages**.
+3. Under *Build and deployment*, set **Source: Deploy from a branch**, pick your
+   branch (e.g. `main`) and folder `/ (root)`, then **Save**.
+4. Wait a minute, then open the URL GitHub shows (e.g. `https://you.github.io/GuessMySketchML/`).
+
+*(The included `.nojekyll` file makes sure all files are served as-is.)*
+
+### Option B — Netlify
+1. Go to [netlify.com](https://www.netlify.com) and log in.
+2. **Drag and drop** the project folder onto the Netlify dashboard, **or** connect the GitHub repo.
+3. No build command is needed — the included `netlify.toml` publishes the folder as-is.
+4. Netlify gives you a public link to share.
+
+> **Not recommended:** Railway (it's built for backend apps/databases, which this project
+> doesn't have). If you use Render, choose the **Static Site** type — not a Web Service.
+
+---
+
 ## Status
 
-🚧 In progress — setting up the drawing canvas and connecting the AI model.
+✅ Core game complete — draw, colors, live AI guessing, Clear button, touch support.
+Ready to deploy.
 
 ## License
 

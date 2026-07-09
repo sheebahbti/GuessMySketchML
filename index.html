@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GuessMySketch ML 🎨🤖</title>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css" />
+
+    <!-- Libraries loaded from CDN (pinned versions) -->
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+    <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>GuessMySketch ML 🎨🤖</h1>
+      <p id="subtitle">Draw something and let the AI guess!</p>
+
+      <!-- Canvas on the left, colors + guess text on the right -->
+      <div id="layout">
+        <!-- p5.js will insert the drawing canvas here -->
+        <div id="canvas-holder"></div>
+
+        <!-- Side panel: color palette + guess + encouragement + clear button -->
+        <aside id="side-panel">
+          <!-- Color palette: buttons get filled by sketch.js -->
+          <div id="palette"></div>
+
+          <p id="guess">Get ready to draw...</p>
+          <p id="encouragement">Tip: draw big and in the middle! ✏️</p>
+
+          <!-- Was the guess right? -->
+          <div id="feedback">
+            <p class="fb-q">Did I guess right?</p>
+            <div class="fb-buttons">
+              <button id="yes-btn" type="button">✅ Yes!</button>
+              <button id="no-btn" type="button">❌ No</button>
+            </div>
+          </div>
+
+          <!-- Shown only when the guess was wrong -->
+          <div id="wrong-panel" hidden>
+            <label for="answer-input">What were you drawing?</label>
+            <input
+              id="answer-input"
+              type="text"
+              list="doodle-list"
+              placeholder="e.g. cup"
+              autocomplete="off"
+            />
+            <datalist id="doodle-list"></datalist>
+            <button id="answer-btn" type="button">Show me how! ✨</button>
+            <div id="tips"></div>
+          </div>
+
+          <div id="controls">
+            <button id="clear-btn" type="button">🧽 Clear / Try Again</button>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <!-- Game code -->
+    <script src="sketch.js"></script>
+  </body>
+</html>
